@@ -1,0 +1,846 @@
+ #include <ESP8266WiFi.h>
+#include <Adafruit_BMP085.h>
+#include <ESP8266WebServer.h>
+#include <ArduinoJson.h>
+
+Adafruit_BMP085 bmp;
+ESP8266WebServer server(80);
+
+const char* ssid = "Xiaomi 11i";
+const char* password = "12345678";
+const int soilMoisturePin = A0;
+
+int soilMoistureDry = 250;
+int soilMoistureWet = 1023;
+float temperature, pressure, altitude, soilMoisture;
+float tempSum = 0, pressureSum = 0, altitudeSum = 0;
+int sampleCount = 0;
+
+String recommendCrop(float soilMoisture, float temperature, float pressure);
+float calculateCost(String crop);
+float calculateProfit(float cost);
+float calculateWaterUsage(float soilMoisture);
+
+void handleWebpage();
+void handleData();
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("ESP8266 is starting up...");
+
+  // Connect to Wi-Fi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to Wi-Fi...");
+  }
+
+  // Print the server's IP address once connected
+  Serial.println("Connected to Wi-Fi!");
+  Serial.print("Server IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // Initialize sensors and server
+  if (!bmp.begin()) {
+    Serial.println("Could not find a valid BMP085/BMP180 sensor, check wiring!");
+    while (1);
+  }
+
+  server.on("/", handleWebpage);
+  server.on("/data", handleData);
+  server.begin();
+  Serial.println("Web server started!");
+}
+
+void loop() {
+  server.handleClient();
+}
+void handleWebpage() {
+  String webpage = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Agriculture Monitoring System JSSATEB EIE DPT</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+
+    <style>
+        :root {
+            --primary: #2196f3;
+            --success: #4caf50;
+            --warning: #ff9800;
+            --danger: #f44336;
+            --bg-light: #f8f9fa;
+            --bg-dark: #121212;
+            --card-light: #ffffff;
+            --card-dark: #1e1e1e;
+            --text-light: #333333;
+            --text-dark: #ffffff;
+            --grid-light: #dddddd;
+            --grid-dark: #444444;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            transition: all 0.3s ease;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+            width: 100%;
+            transition: height 0.3s ease;
+            cursor: pointer;
+        }
+
+        @media (max-width: 768px) {
+            .chart-container {
+                height: 250px;
+            }
+        }
+
+        .alert {
+            position: fixed;
+            bottom: 1rem;
+            right: 1rem;
+            z-index: 1000;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); }
+            to { transform: translateX(0); }
+        }
+
+        [data-theme='dark'] {
+            background-color: var(--bg-dark);
+            color: var(--text-dark);
+        }
+
+        [data-theme='dark'] .card {
+            background-color: var(--card-dark);
+            color: var(--text-dark);
+        }
+
+        [data-theme='dark'] .bg-gray-50 {
+            background-color: var(--bg-dark);
+        }
+
+        [data-theme='dark'] .text-gray-600 {
+            color: var(--text-dark);
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+        }
+
+        .modal-content {
+            position: relative;
+            width: 90%;
+            height: 80%;
+            margin: 5% auto;
+            background: var(--card-light);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .modal.show {
+            display: block;
+        }
+
+        .close-modal {
+            position: absolute;
+            right: 20px;
+            top: 20px;
+            font-size: 24px;
+            cursor: pointer;
+            color: var(--text-light);
+            z-index: 1001;
+        }
+
+        [data-theme='dark'] .close-modal {
+            color: var(--text-dark);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 transition-colors duration-300" data-theme="light">
+    <nav class="sticky top-0 bg-white shadow-md z-50">
+        <div class="container mx-auto px-4 py-3">
+            <div class="flex justify-between items-center">
+                <h1 class="text-2xl font-bold text-gray-800">Smart Agriculture Monitoring System JSSATEB EIE DPT</h1>
+                <div class="space-x-2">
+                    <!--button class="btn btn-primary hover:bg-blue-600" onclick="toggleTheme()">
+                        <i class="fas fa-moon mr-2"></i>Theme
+                    </button made by HARSHIT SINHA CSE branch-->
+                    <button class="btn btn-success hover:bg-green-600" onclick="exportData()">
+                        <i class="fas fa-download mr-2"></i>Export
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mx-auto px-4 py-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <!-- Temperature Card -->
+            <div class="card bg-white rounded-xl shadow-lg hover:shadow-xl transition-all">
+                <div class="card-body p-6">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-800">Temperature</h2>
+                    <div class="flex items-center space-x-2 mb-4">
+                        <span id="tempValue" class="text-4xl font-bold text-blue-600">--</span>
+                        <span class="text-2xl text-gray-600">Â°C</span>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="tempChart"></canvas>
+                    </div>
+                    <div class="flex flex-wrap gap-2 mt-4">
+                        <button class="btn btn-sm btn-outline-primary" onclick="setTimeframe(30)">30s</button>
+                        <button class="btn btn-sm btn-outline-primary" onclick="setTimeframe(60)">1m</button>
+                        <button class="btn btn-sm btn-outline-primary" onclick="setTimeframe(300)">5m</button>
+                        <div class="flex items-center gap-2">
+                            <input type="number" id="customTime" class="form-control form-control-sm w-20" placeholder="Sec">
+                            <button class="btn btn-sm btn-primary" onclick="setCustomTimeframe()">Set</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Soil Moisture Card -->
+            <div class="card bg-white rounded-xl shadow-lg hover:shadow-xl transition-all">
+                <div class="card-body p-6">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-800">Soil Moisture</h2>
+                    <div class="chart-container">
+                        <canvas id="moistureChart"></canvas>
+                    </div>
+                    <div class="mt-4 bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg p-4">
+                        <h3 class="text-white font-semibold mb-2">Recommended Crop</h3>
+                        <p id="cropName" class="text-white text-lg">Loading...</p>
+                    </div>
+                </div>
+            </div>
+
+            
+            <div class="card bg-white rounded-xl shadow-lg hover:shadow-xl transition-all">
+                <div class="card-body p-6">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-800">Pressure & Altitude</h2>
+                    <div class="chart-container">
+                        <canvas id="pressureChart"></canvas>
+                    </div>
+                    <div class="chart-container mt-4">
+                        <canvas id="altitudeChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+           
+            <div class="card bg-white rounded-xl shadow-lg hover:shadow-xl transition-all">
+                <div class="card-body p-6">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-800">Economic Analysis</h2>
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                            <span class="text-gray-600">Estimated Cost</span>
+                            <span class="text-2xl font-bold text-green-600">â‚¹<span id="costValue">--</span></span>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                            <span class="text-gray-600">Projected Profit</span>
+                            <span class="text-2xl font-bold text-green-600">â‚¹<span id="profitValue">--</span></span>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                            <span class="text-gray-600">Water Usage</span>
+                            <span class="text-2xl font-bold text-blue-600"><span id="waterValue">--</span>L</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="chartModal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal" onclick="closeModal()">&times;</span>
+            <div class="chart-container h-full">
+                <canvas id="expandedChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <footer class="bg-white py-4 mt-8">
+        <div class="container mx-auto px-4 text-center">
+            <p class="text-gray-600">
+                &copy; 2024 Smart Agriculture Monitoring System. All rights reserved.
+            </p>
+            <p class="text-sm text-gray-500 mt-2">
+                Developed by [Your Name/Team Name] - JSSATEB EIE Department
+            </p>
+        </div>
+    </footer>
+
+    <div class="fixed bottom-4 right-4 z-50" id="alertContainer"></div>
+
+    <script>
+        let maxDataPoints = 30;
+        let charts = {};
+        const chartData = {
+            temp: { times: [], values: [] },
+            pressure: { times: [], values: [] },
+            altitude: { times: [], values: [] },
+            moisture: { times: [], values: [] }
+        };
+        
+        function initializeEmptyData() {
+            const now = new Date();
+            Object.keys(chartData).forEach(type => {
+                chartData[type].times = [];
+                chartData[type].values = [];
+                for (let i = 0; i < maxDataPoints; i++) {
+                    const time = new Date(now - (maxDataPoints - i) * 1000);
+                    chartData[type].times.push(time);
+                    chartData[type].values.push(null);
+                }
+            });
+        }
+        
+        function initCharts() {
+            const chartConfigs = {
+                temp: {
+                    element: 'tempChart',
+                    color: '#ff4444',
+                    label: 'Temperature (Â°C)'
+                },
+                pressure: {
+                    element: 'pressureChart',
+                    color: '#2196f3',
+                    label: 'Pressure (hPa)'
+                },
+                altitude: {
+                    element: 'altitudeChart',
+                    color: '#4caf50',
+                    label: 'Altitude (m)'
+                },
+                moisture: {
+                    element: 'moistureChart',
+                    color: '#9c27b0',
+                    label: 'Moisture (%)'
+                }
+            };
+        
+            const defaultOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    intersect: false,
+                    mode: 'index'
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        enabled: true,
+                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        titleColor: '#fff',
+                        bodyColor: '#fff',
+                        padding: 10,
+                        displayColors: false
+                    }
+                },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'second',
+                            displayFormats: {
+                                second: 'HH:mm:ss'
+                            }
+                        },
+                        grid: {
+                            display: false
+                        },
+                        ticks: {
+                            maxTicksLimit: 8,
+                            autoSkip: true
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        grace: '5%',
+                        ticks: {
+                            precision: 1,
+                            callback: function(value) {
+                                return value.toFixed(1);
+                            }
+                        }
+                    }
+                },
+                animation: {
+                    duration: 300
+                }
+            };
+        
+            Object.entries(chartConfigs).forEach(([type, config]) => {
+                const ctx = document.getElementById(config.element);
+                if (!ctx) {
+                    console.error(`Canvas element ${config.element} not found`);
+                    return;
+                }
+        
+                charts[type] = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            label: config.label,
+                            data: [],
+                            borderColor: config.color,
+                            backgroundColor: `${config.color}33`,
+                            fill: true,
+                            tension: 0.4,
+                            pointRadius: 0,
+                            pointHitRadius: 8,
+                            borderWidth: 2
+                        }]
+                    },
+                    options: defaultOptions
+                });
+        
+                ctx.parentElement.addEventListener('click', () => expandChart(type, config));
+            });
+        }
+        
+        function updateCharts() {
+            fetch('/data')
+                .then(response => {
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    return response.json();
+                })
+                .then(data => {
+                    if (!data || typeof data !== 'object') throw new Error('Invalid data format');
+                    
+                    const now = new Date();
+                    const mappedData = {
+                        temp: data.temperature,
+                        pressure: data.pressure,
+                        altitude: data.altitude,
+                        moisture: data.moisture
+                    };
+
+                    document.getElementById('tempValue').innerText = data.temperature.toFixed(1);
+
+                    Object.keys(mappedData).forEach(type => {
+                        if (chartData[type] && charts[type]) {
+                            chartData[type].times.push(now);
+                            chartData[type].values.push(mappedData[type]);
+
+                            // Keep only the latest 'maxDataPoints'
+                            chartData[type].times = chartData[type].times.slice(-maxDataPoints);
+                            chartData[type].values = chartData[type].values.slice(-maxDataPoints);
+
+                            charts[type].data.labels = chartData[type].times;
+                            charts[type].data.datasets[0].data = chartData[type].values;
+
+                            charts[type].update();
+                        }
+                    });
+
+                    // Update the crop recommendation
+                    document.getElementById('cropName').innerText = data.recommendedCrop;
+
+                })
+                .catch(error => {
+                    console.error('Failed to fetch data:', error);
+                });
+        }
+        
+        function setTimeframe(seconds) {
+            maxDataPoints = seconds;
+            initializeEmptyData();
+            Object.keys(charts).forEach(type => {
+                charts[type].data.labels = chartData[type].times;
+                charts[type].data.datasets[0].data = chartData[type].values;
+                charts[type].update();
+            });
+        }
+
+        function setCustomTimeframe() {
+            const customTime = document.getElementById('customTime').value;
+            if (customTime > 0) {
+                setTimeframe(parseInt(customTime));
+            } else {
+                alert('Please enter a valid time in seconds.');
+            }
+        }
+
+        function expandChart(type, config) {
+            const modal = document.getElementById('chartModal');
+            const expandedCtx = document.getElementById('expandedChart');
+
+            if (!modal || !expandedCtx) {
+                console.error('Modal or expanded chart canvas not found');
+                return;
+            }
+
+            // Destroy existing chart if it exists
+            if (expandedCtx.chart) {
+                expandedCtx.chart.destroy();
+            }
+
+            expandedCtx.chart = new Chart(expandedCtx, {
+                type: 'line',
+                data: {
+                    labels: charts[type].data.labels,
+                    datasets: [{
+                        label: config.label,
+                        data: charts[type].data.datasets[0].data,
+                        borderColor: config.color,
+                        backgroundColor: `${config.color}33`,
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 3,
+                        pointHitRadius: 8,
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'second',
+                                displayFormats: {
+                                    second: 'HH:mm:ss'
+                                }
+                            },
+                            grid: {
+                                display: false
+                            },
+                            ticks: {
+                                maxTicksLimit: 15,
+                                autoSkip: true
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            grace: '5%',
+                            ticks: {
+                                precision: 1,
+                                callback: function(value) {
+                                    return value.toFixed(1);
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        title: {
+                            display: true,
+                            text: config.label,
+                            font: {
+                                size: 16
+                            }
+                        },
+                        tooltip: {
+                            enabled: true,
+                            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                            titleColor: '#fff',
+                            bodyColor: '#fff',
+                            padding: 10,
+                            displayColors: false
+                        }
+                    }
+                }
+            });
+
+            modal.classList.add('show');
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('chartModal');
+            modal.classList.remove('show');
+        }
+
+        function exportData() {
+            let csvContent = "data:text/csv;charset=utf-8,";
+            csvContent += "Time,Temperature,Pressure,Altitude,Moisture\n";
+
+            const dataLength = Math.max(
+                chartData.temp.times.length,
+                chartData.pressure.times.length,
+                chartData.altitude.times.length,
+                chartData.moisture.times.length
+            );
+
+            for (let i = 0; i < dataLength; i++) {
+                const time = chartData.temp.times[i] ? chartData.temp.times[i].toISOString() : '';
+                const temp = chartData.temp.values[i] || '';
+                const pressure = chartData.pressure.values[i] || '';
+                const altitude = chartData.altitude.values[i] || '';
+                const moisture = chartData.moisture.values[i] || '';
+
+                csvContent += `${time},${temp},${pressure},${altitude},${moisture}\n`;
+            }
+
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", "sensor_data.csv");
+            document.body.appendChild(link); // Required for FF
+
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        // Initialize charts and data
+        initializeEmptyData();
+        initCharts();
+        setInterval(updateCharts, 1000); // Update every 1 second
+    </script>
+</body>
+</html>
+)rawliteral";
+
+  server.send(200, "text/html", webpage);
+}
+void handleData() {
+  // Read sensor data
+  temperature = bmp.readTemperature();
+  pressure = bmp.readPressure() / 100.0; // Convert to hPa
+  altitude = bmp.readAltitude();
+  int rawSoilMoisture = analogRead(soilMoisturePin);
+  soilMoisture = map(rawSoilMoisture, soilMoistureDry, soilMoistureWet, 100, 0); // Map to 0-100%
+  soilMoisture = constrain(soilMoisture, 0, 100);
+
+  // Generate crop recommendation
+  String recommendedCrop = recommendCrop(soilMoisture, temperature, pressure);
+
+  // Create JSON response
+  StaticJsonDocument<256> doc; // Declare doc here
+  doc["temperature"] = temperature;
+  doc["pressure"] = pressure;
+  doc["altitude"] = altitude;
+  doc["moisture"] = soilMoisture;
+  doc["recommendedCrop"] = recommendedCrop;
+
+  // Serialize JSON to String
+  String json;
+  serializeJson(doc, json);
+
+  // Send JSON response
+  server.send(200, "application/json", json);
+
+  // Print sensor data to serial monitor
+  Serial.print("Temperature: ");
+  Serial.print(temperature);
+  Serial.print(" Â°C, Pressure: ");
+  Serial.print(pressure);
+  Serial.print(" hPa, Altitude: ");
+  Serial.print(altitude);
+  Serial.print(" m, Soil Moisture: ");
+  Serial.print(soilMoisture);
+  Serial.println(" %");
+  Serial.print("Recommended Crop: ");
+  Serial.println(recommendedCrop);
+}
+
+
+String recommendCrop(float soilMoisture, float temperature, float pressure) {
+  String cropRecommendation = "No specific crop recommendation.";
+  String crops = "";
+
+  if (pressure >= 950 && pressure <= 1013) {
+    if (temperature >= 20 && temperature <= 35 && soilMoisture >= 70 && soilMoisture <= 100) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Rice, Banana";
+    }
+    if (temperature >= 15 && temperature <= 25 && soilMoisture >= 30 && soilMoisture <= 50) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Wheat, Barley, Oats, Field Beans, Mustard, Flax/Linseed, Coriander, Fenugreek, Onion, Apple, Pear, Plum, Peach";
+    }
+    if (temperature >= 21 && temperature <= 30 && soilMoisture >= 30 && soilMoisture <= 50) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Maize/Corn, Cotton, Tobacco, Guava, Sapota/Chikoo, Dragon Fruit, Mango";
+    }
+    if (temperature >= 20 && temperature <= 30 && soilMoisture >= 15 && soilMoisture <= 30) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Ragi/Finger Millet";
+    }
+    if (temperature >= 25 && temperature <= 32 && soilMoisture >= 15 && soilMoisture <= 30) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Jowar/Sorghum";
+    }
+    if (temperature >= 25 && temperature <= 35 && soilMoisture >= 15 && soilMoisture <= 30) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Pearl Millet/Bajra";
+    }
+    if (temperature >= 20 && temperature <= 32 && soilMoisture >= 15 && soilMoisture <= 30) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Foxtail Millet";
+    }
+    if (temperature >= 15 && temperature <= 25 && soilMoisture >= 20 && soilMoisture <= 40) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Quinoa";
+    }
+    if (temperature >= 20 && temperature <= 30 && soilMoisture >= 20 && soilMoisture <= 40) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Amaranth, Red Gram/Pigeon Pea, Horse Gram, Cumin";
+    }
+    if (temperature >= 20 && temperature <= 25 && soilMoisture >= 20 && soilMoisture <= 40) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Bengal Gram/Chickpea";
+    }
+    if (temperature >= 25 && temperature <= 35 && soilMoisture >= 30 && soilMoisture <= 50) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Green Gram/Mung Bean, Black Gram, Cow Pea, Sesame";
+    }
+    if (temperature >= 20 && temperature <= 30 && soilMoisture >= 30 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Soybeans";
+    }
+    if (temperature >= 25 && temperature <= 30 && soilMoisture >= 30 && soilMoisture <= 50) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Peanut/Groundnut";
+    }
+    if (temperature >= 18 && temperature <= 30 && soilMoisture >= 20 && soilMoisture <= 40) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Lentil";
+    }
+    if (temperature >= 20 && temperature <= 25 && soilMoisture >= 30 && soilMoisture <= 45) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Sunflower";
+    }
+    if (temperature >= 20 && temperature <= 30 && soilMoisture >= 30 && soilMoisture <= 50) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Castor, Mulberry";
+    }
+    if (temperature >= 15 && temperature <= 25 && soilMoisture >= 20 && soilMoisture <= 40) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Safflower";
+    }
+    if (temperature >= 24 && temperature <= 30 && soilMoisture >= 60 && soilMoisture <= 80) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Sugarcane, Rubber";
+    }
+    if (temperature >= 25 && temperature <= 35 && soilMoisture >= 50 && soilMoisture <= 70) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Jute";
+    }
+    if (temperature >= 20 && temperature <= 35 && soilMoisture >= 40 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Coconut";
+    }
+    if (temperature >= 14 && temperature <= 36 && soilMoisture >= 50 && soilMoisture <= 70) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Arecanut/Betel Nut";
+    }
+     if (temperature >= 15 && temperature <= 25 && soilMoisture >= 50 && soilMoisture <= 70 && pressure >= 950 && pressure <= 1013) {
+       if (crops.length() > 0) crops += ", ";
+        crops += "Coffee";
+    }
+      if (temperature >= 18 && temperature <= 30 && soilMoisture >= 50 && soilMoisture <= 70 && pressure >= 950 && pressure <= 1013) {
+       if (crops.length() > 0) crops += ", ";
+        crops += "Tea";
+    }
+
+    if (temperature >= 20 && temperature <= 30 && soilMoisture >= 40 && soilMoisture <= 70) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Turmeric";
+    }
+    if (temperature >= 22 && temperature <= 28 && soilMoisture >= 50 && soilMoisture <= 70) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Ginger";
+    }
+
+    if (temperature >= 15 && temperature <= 25 && soilMoisture >= 40 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Potato, Carrot, Radish, Beetroot, Spinach, Fenugreek Leaves, Mustard Greens";
+    }
+    if (temperature >= 15 && temperature <= 20 && soilMoisture >= 40 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Turnip, Lettuce, Cabbage, Kale";
+    }
+
+    if (temperature >= 20 && temperature <= 27 && soilMoisture >= 40 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Tomato";
+    }
+    if (temperature >= 20 && temperature <= 30 && soilMoisture >= 40 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Brinjal/Eggplant";
+    }
+    if (temperature >= 25 && temperature <= 35 && soilMoisture >= 40 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Okra/Lady's Finger";
+    }
+    if (temperature >= 18 && temperature <= 30 && soilMoisture >= 40 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Bell Pepper/Capsicum, Cucumber, Pumpkin";
+    }
+    if (temperature >= 24 && temperature <= 35 && soilMoisture >= 40 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Bitter Gourd, Bottle Gourd, Ridge Gourd, Snake Gourd, Ivy Gourd";
+    }
+    if (temperature >= 22 && temperature <= 30 && soilMoisture >= 40 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Watermelon, Muskmelon";
+    }
+    if (temperature >= 20 && temperature <= 30 && soilMoisture >= 40 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Chili Pepper";
+    }
+    if (temperature >= 20 && temperature <= 32 && soilMoisture >= 40 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Jackfruit, Pineapple";
+    }
+     if (temperature >= 21 && temperature <= 27 && soilMoisture >= 50 && soilMoisture <= 70) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Colocasia/Taro";
+    }
+     if (temperature >= 15 && temperature <= 30 && soilMoisture >= 30 && soilMoisture <= 50) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Orange, Lime/Lemon, Grapes, Fig";
+    }
+     if (temperature >= 15 && temperature <= 26 && soilMoisture >= 40 && soilMoisture <= 60) {
+      if (crops.length() > 0) crops += ", ";
+      crops += "Strawberry";
+    }
+  }
+
+  if (crops.length() > 0) {
+    cropRecommendation = crops;
+  }
+
+  return cropRecommendation;
+}
+float calculateCost(String crop) {
+  // Implement cost calculation logic here
+  return 0.0;
+}
+
+float calculateProfit(float cost) {
+  // Implement profit calculation logic here
+  return 0.0;
+}
+
+float calculateWaterUsage(float soilMoisture) {
+  // Implement water usage calculation logic here
+  return 0.0;
+}
