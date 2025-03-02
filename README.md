@@ -98,6 +98,4 @@ This project implements a smart agriculture monitoring system using an ESP8266 a
 
 Contributions are welcome!  Please fork the repository and submit a pull request with your changes.
 
-## License
 
-[Choose a license, e.g., MIT License]
